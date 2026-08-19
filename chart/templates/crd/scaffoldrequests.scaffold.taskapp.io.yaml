@@ -42,23 +42,74 @@ spec:
           spec:
             description: spec defines the desired state of ScaffoldRequest
             properties:
-              foo:
-                description: foo is an example field of ScaffoldRequest. Edit scaffoldrequest_types.go
-                  to remove/update
+              componentName:
+                description: |-
+                  componentName is the identity used for the service/binary name, Helm
+                  chart name, and Kubernetes resource names rendered into the scaffold.
                 type: string
+              componentRef:
+                description: |-
+                  componentRef is informational: correlation/provenance only (matches the
+                  standard componentRef + platform.taskapp.io/component label pattern
+                  every related resource carries). Not read by this controller as an
+                  execution input.
+                properties:
+                  name:
+                    description: name of the Component this resource belongs to.
+                    type: string
+                required:
+                - name
+                type: object
+              owner:
+                description: owner is the GitHub org or user the target repository
+                  belongs to.
+                type: string
+              repositoryName:
+                description: |-
+                  repositoryName is the name of the target GitHub repository the
+                  scaffold is committed into, and is also substituted into the rendered
+                  template (e.g. the Go module path).
+                type: string
+              template:
+                description: template is the platform-scaffolds template name (e.g.
+                  golang-service).
+                type: string
+              version:
+                description: |-
+                  version is the platform-scaffolds template's SemVer tag (e.g. 0.1.0),
+                  without the template name prefix or a leading "v".
+                type: string
+            required:
+            - componentName
+            - componentRef
+            - owner
+            - repositoryName
+            - template
+            - version
             type: object
           status:
             description: status defines the observed state of ScaffoldRequest
             properties:
+              commitSHA:
+                description: |-
+                  commitSHA is the commit created in the target application repository —
+                  the other half of provenance, answering "what did we write" as opposed
+                  to templateRevision's "what did we render it from". Also the recovery
+                  anchor for the once-only check performed on every reconcile of a
+                  non-empty repository.
+                type: string
               conditions:
                 description: |-
                   conditions represent the current state of the ScaffoldRequest resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
 
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
+                  Two terminal condition types are used, and neither is ever cleared or
+                  retried automatically once True:
+                    - "Completed": True on success, including the crash-recovery case
+                      where a prior run's commit is verified to already exist.
+                    - "Blocked": True when the target repository has unexplained
+                      pre-existing content this request did not create and cannot prove
+                      it created — a terminal, human-intervention-required state (e.g.
+                      reason "RepositoryNotEmpty").
 
                   The status of each condition is one of True, False, or Unknown.
                 items:
@@ -119,6 +170,14 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              templateRevision:
+                description: |-
+                  templateRevision is the immutable platform-scaffolds commit SHA
+                  actually fetched and rendered — distinct from spec.version (the
+                  human-readable SemVer tag). Set as soon as the tag is resolved, before
+                  any GitHub write is attempted, so it's available even if the run later
+                  fails or blocks.
+                type: string
             type: object
         required:
         - spec
