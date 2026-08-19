@@ -1,0 +1,185 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: scaffoldrequests.scaffold.taskapp.io
+spec:
+  group: scaffold.taskapp.io
+  names:
+    kind: ScaffoldRequest
+    listKind: ScaffoldRequestList
+    plural: scaffoldrequests
+    singular: scaffoldrequest
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: ScaffoldRequest is the Schema for the scaffoldrequests API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of ScaffoldRequest
+            properties:
+              componentName:
+                description: |-
+                  componentName is the identity used for the service/binary name, Helm
+                  chart name, and Kubernetes resource names rendered into the scaffold.
+                type: string
+              componentRef:
+                description: |-
+                  componentRef is informational: correlation/provenance only (matches the
+                  standard componentRef + platform.taskapp.io/component label pattern
+                  every related resource carries). Not read by this controller as an
+                  execution input.
+                properties:
+                  name:
+                    description: name of the Component this resource belongs to.
+                    type: string
+                required:
+                - name
+                type: object
+              owner:
+                description: owner is the GitHub org or user the target repository
+                  belongs to.
+                type: string
+              repositoryName:
+                description: |-
+                  repositoryName is the name of the target GitHub repository the
+                  scaffold is committed into, and is also substituted into the rendered
+                  template (e.g. the Go module path).
+                type: string
+              template:
+                description: template is the platform-scaffolds template name (e.g.
+                  golang-service).
+                type: string
+              version:
+                description: |-
+                  version is the platform-scaffolds template's SemVer tag (e.g. 0.1.0),
+                  without the template name prefix or a leading "v".
+                type: string
+            required:
+            - componentName
+            - componentRef
+            - owner
+            - repositoryName
+            - template
+            - version
+            type: object
+          status:
+            description: status defines the observed state of ScaffoldRequest
+            properties:
+              commitSHA:
+                description: |-
+                  commitSHA is the commit created in the target application repository —
+                  the other half of provenance, answering "what did we write" as opposed
+                  to templateRevision's "what did we render it from". Also the recovery
+                  anchor for the once-only check performed on every reconcile of a
+                  non-empty repository.
+                type: string
+              conditions:
+                description: |-
+                  conditions represent the current state of the ScaffoldRequest resource.
+
+                  Two terminal condition types are used, and neither is ever cleared or
+                  retried automatically once True:
+                    - "Completed": True on success, including the crash-recovery case
+                      where a prior run's commit is verified to already exist.
+                    - "Blocked": True when the target repository has unexplained
+                      pre-existing content this request did not create and cannot prove
+                      it created — a terminal, human-intervention-required state (e.g.
+                      reason "RepositoryNotEmpty").
+
+                  The status of each condition is one of True, False, or Unknown.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              templateRevision:
+                description: |-
+                  templateRevision is the immutable platform-scaffolds commit SHA
+                  actually fetched and rendered — distinct from spec.version (the
+                  human-readable SemVer tag). Set as soon as the tag is resolved, before
+                  any GitHub write is attempted, so it's available even if the run later
+                  fails or blocks.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

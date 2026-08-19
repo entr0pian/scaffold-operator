@@ -1,0 +1,16 @@
+apiVersion: scaffold.taskapp.io/v1alpha1
+kind: ScaffoldRequest
+metadata:
+  labels:
+    app.kubernetes.io/name: scaffold-operator
+    app.kubernetes.io/managed-by: kustomize
+    platform.taskapp.io/component: payments
+  name: payments
+spec:
+  componentRef:
+    name: payments
+  componentName: payments
+  repositoryName: payments
+  owner: entr0pian
+  template: golang-service
+  version: "0.1.0"

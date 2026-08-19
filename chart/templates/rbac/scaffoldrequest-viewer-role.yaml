@@ -1,0 +1,33 @@
+{{- if .Values.rbac.helpers.enable }}
+apiVersion: rbac.authorization.k8s.io/v1
+{{- if .Values.rbac.namespaced }}
+kind: Role
+{{- else }}
+kind: ClusterRole
+{{- end }}
+metadata:
+{{- if .Values.rbac.namespaced }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: {{ include "scaffold-operator.name" . }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  name: {{ include "scaffold-operator.resourceName" (dict "suffix" "scaffoldrequest-viewer-role" "context" $) }}
+rules:
+- apiGroups:
+  - scaffold.taskapp.io
+  resources:
+  - scaffoldrequests
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - scaffold.taskapp.io
+  resources:
+  - scaffoldrequests/status
+  verbs:
+  - get
+{{- end }}
