@@ -108,7 +108,12 @@ func (c *goGithubClient) RepositoryState(ctx context.Context, owner, repo string
 
 	_, _, err = c.gh.Git.GetRef(ctx, owner, repo, "heads/"+defaultBranch)
 	if err != nil {
-		if isNotFound(err) {
+		// GitHub does not 404 a missing ref on a repository that exists but
+		// has no commit history yet -- it returns 409 Conflict ("Git
+		// Repository is empty") instead. isNotFound alone (404) never
+		// matches a genuinely empty repo; a nonexistent repo would already
+		// have failed above on Repositories.Get.
+		if isEmptyRepository(err) {
 			return defaultBranch, true, nil
 		}
 		return "", false, err
@@ -172,4 +177,12 @@ func (c *goGithubClient) CommitFiles(ctx context.Context, owner, repo, branch, m
 func isNotFound(err error) bool {
 	var ghErr *github.ErrorResponse
 	return errors.As(err, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound
+}
+
+// isEmptyRepository reports whether err is GitHub's documented response for
+// a git-data read against a repository with no commit history: a 409
+// Conflict ("Git Repository is empty"), not a 404.
+func isEmptyRepository(err error) bool {
+	var ghErr *github.ErrorResponse
+	return errors.As(err, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusConflict
 }
