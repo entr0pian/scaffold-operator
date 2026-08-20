@@ -152,34 +152,45 @@ func (r *ScaffoldRequestReconciler) execute(ctx context.Context, sr *scaffoldv1a
 	}
 	files := renderTemplate(templateDir, params)
 
-	defaultBranch, empty, err := gh.RepositoryState(ctx, sr.Spec.Owner, sr.Spec.RepositoryName)
+	defaultBranch, commitCount, headSHA, headTreeSHA, err := gh.RepositoryState(ctx, sr.Spec.Owner, sr.Spec.RepositoryName)
 	if err != nil {
 		return fmt.Errorf("reading target repository %s/%s state: %w", sr.Spec.Owner, sr.Spec.RepositoryName, err)
 	}
 
-	if !empty {
-		// This request has no proof it produced the existing content — it
-		// may be a manually created README, a different tool, a previous
-		// unrelated attempt, anything. Favor safe failure over repair or
-		// overwrite, UNLESS the recorded commitSHA from a prior run of this
-		// exact request is still reachable — that's a genuine
-		// crash/status-write-loss recovery, not someone else's content.
-		if sr.Status.CommitSHA != "" {
-			exists, err := gh.CommitExists(ctx, sr.Spec.Owner, sr.Spec.RepositoryName, sr.Status.CommitSHA)
-			if err != nil {
-				return fmt.Errorf("verifying recovery commit %s in %s/%s: %w", sr.Status.CommitSHA, sr.Spec.Owner, sr.Spec.RepositoryName, err)
-			}
-			if exists {
-				r.complete(sr, "recovered: a prior run's commit is already present in the repository")
-				return nil
-			}
+	// A recorded commitSHA that's still reachable means a prior run of this
+	// exact request already committed and the status patch never landed —
+	// genuine crash/status-write-loss recovery, checked before anything
+	// else regardless of the repository's current commit count.
+	if sr.Status.CommitSHA != "" {
+		exists, err := gh.CommitExists(ctx, sr.Spec.Owner, sr.Spec.RepositoryName, sr.Status.CommitSHA)
+		if err != nil {
+			return fmt.Errorf("verifying recovery commit %s in %s/%s: %w", sr.Status.CommitSHA, sr.Spec.Owner, sr.Spec.RepositoryName, err)
 		}
+		if exists {
+			r.complete(sr, "recovered: a prior run's commit is already present in the repository")
+			return nil
+		}
+	}
+
+	var parentSHA, baseTreeSHA string
+	switch {
+	case commitCount >= 2:
+		// Two or more commits already exist and this request has no
+		// reachable commitSHA of its own — no proof it produced any of this
+		// content. Favor safe failure over repair or overwrite.
 		r.block(sr, "RepositoryNotEmpty", fmt.Sprintf("%s/%s already has commits this request did not create", sr.Spec.Owner, sr.Spec.RepositoryName))
 		return nil
+	case commitCount == 1:
+		// The expected starting state for a freshly created repository
+		// (component-operator always sets autoInit:true) — build the
+		// scaffold commit on top of GitHub's auto-generated commit rather
+		// than requiring a genuinely empty repository, which GitHub's Git
+		// Data API rejects outright (see CommitFiles).
+		parentSHA, baseTreeSHA = headSHA, headTreeSHA
 	}
 
 	message := fmt.Sprintf("initial scaffold: %s@%s", sr.Spec.Template, sr.Spec.Version)
-	commitSHA, err := gh.CommitFiles(ctx, sr.Spec.Owner, sr.Spec.RepositoryName, defaultBranch, message, files)
+	commitSHA, err := gh.CommitFiles(ctx, sr.Spec.Owner, sr.Spec.RepositoryName, defaultBranch, message, files, parentSHA, baseTreeSHA)
 	if err != nil {
 		return fmt.Errorf("committing scaffold to %s/%s: %w", sr.Spec.Owner, sr.Spec.RepositoryName, err)
 	}

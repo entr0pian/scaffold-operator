@@ -40,9 +40,9 @@ import (
 type stubGitHubClient struct {
 	resolveRevisionFn func(ctx context.Context, owner, repo, ref string) (string, error)
 	fetchTreeFn       func(ctx context.Context, owner, repo, sha, prefix string) (map[string][]byte, error)
-	repositoryStateFn func(ctx context.Context, owner, repo string) (string, bool, error)
+	repositoryStateFn func(ctx context.Context, owner, repo string) (string, int, string, string, error)
 	commitExistsFn    func(ctx context.Context, owner, repo, sha string) (bool, error)
-	commitFilesFn     func(ctx context.Context, owner, repo, branch, message string, files map[string][]byte) (string, error)
+	commitFilesFn     func(ctx context.Context, owner, repo, branch, message string, files map[string][]byte, parentSHA, baseTreeSHA string) (string, error)
 
 	commitFilesCalls int
 }
@@ -61,7 +61,7 @@ func (s *stubGitHubClient) FetchTree(ctx context.Context, owner, repo, sha, pref
 	return s.fetchTreeFn(ctx, owner, repo, sha, prefix)
 }
 
-func (s *stubGitHubClient) RepositoryState(ctx context.Context, owner, repo string) (string, bool, error) {
+func (s *stubGitHubClient) RepositoryState(ctx context.Context, owner, repo string) (string, int, string, string, error) {
 	if s.repositoryStateFn == nil {
 		Fail("unexpected RepositoryState call")
 	}
@@ -75,12 +75,12 @@ func (s *stubGitHubClient) CommitExists(ctx context.Context, owner, repo, sha st
 	return s.commitExistsFn(ctx, owner, repo, sha)
 }
 
-func (s *stubGitHubClient) CommitFiles(ctx context.Context, owner, repo, branch, message string, files map[string][]byte) (string, error) {
+func (s *stubGitHubClient) CommitFiles(ctx context.Context, owner, repo, branch, message string, files map[string][]byte, parentSHA, baseTreeSHA string) (string, error) {
 	s.commitFilesCalls++
 	if s.commitFilesFn == nil {
 		Fail("unexpected CommitFiles call")
 	}
-	return s.commitFilesFn(ctx, owner, repo, branch, message, files)
+	return s.commitFilesFn(ctx, owner, repo, branch, message, files, parentSHA, baseTreeSHA)
 }
 
 // scaffoldTreeFixture is a minimal fake templates/golang-service/ tree, keyed
@@ -187,13 +187,15 @@ var _ = Describe("ScaffoldRequest Controller", func() {
 					Expect(gotPrefix).To(Equal(prefix))
 					return scaffoldTreeFixture(prefix), nil
 				},
-				repositoryStateFn: func(ctx context.Context, owner, repo string) (string, bool, error) {
+				repositoryStateFn: func(ctx context.Context, owner, repo string) (string, int, string, string, error) {
 					Expect(owner).To(Equal("entr0pian"))
 					Expect(repo).To(Equal(name))
-					return "trunk", true, nil // not "main" — must not be hardcoded
+					return "trunk", 0, "", "", nil // not "main" -- must not be hardcoded
 				},
-				commitFilesFn: func(ctx context.Context, owner, repo, branch, message string, files map[string][]byte) (string, error) {
+				commitFilesFn: func(ctx context.Context, owner, repo, branch, message string, files map[string][]byte, parentSHA, baseTreeSHA string) (string, error) {
 					Expect(branch).To(Equal("trunk"))
+					Expect(parentSHA).To(BeEmpty())
+					Expect(baseTreeSHA).To(BeEmpty())
 					Expect(files).To(HaveKey("go.mod"))
 					Expect(files).NotTo(HaveKey("go.mod.tpl"))
 					Expect(string(files["go.mod"])).To(Equal(fmt.Sprintf("module github.com/entr0pian/%s\n", name)))
@@ -209,6 +211,42 @@ var _ = Describe("ScaffoldRequest Controller", func() {
 			Expect(sr.Status.TemplateRevision).To(Equal("deadbeef"))
 			Expect(sr.Status.CommitSHA).To(Equal("commitsha123"))
 
+			completed := findCondition(sr.Status.Conditions, "Completed")
+			Expect(completed).NotTo(BeNil())
+			Expect(completed.Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
+	Context("repository with a single existing commit (autoInit:true baseline)", func() {
+		It("builds the scaffold commit on top of it and completes", func() {
+			const name = "payments-autoinit"
+			Expect(k8sClient.Create(ctx, newScaffoldRequest(name))).To(Succeed())
+			DeferCleanup(func() {
+				Expect(k8sClient.Delete(ctx, newScaffoldRequest(name))).To(Succeed())
+			})
+
+			prefix := "templates/golang-service/"
+			stub := &stubGitHubClient{
+				resolveRevisionFn: func(ctx context.Context, owner, repo, ref string) (string, error) { return "deadbeef", nil },
+				fetchTreeFn: func(ctx context.Context, owner, repo, sha, gotPrefix string) (map[string][]byte, error) {
+					return scaffoldTreeFixture(prefix), nil
+				},
+				repositoryStateFn: func(ctx context.Context, owner, repo string) (string, int, string, string, error) {
+					return "main", 1, "autoinitsha", "autoinittree", nil
+				},
+				commitFilesFn: func(ctx context.Context, owner, repo, branch, message string, files map[string][]byte, parentSHA, baseTreeSHA string) (string, error) {
+					Expect(parentSHA).To(Equal("autoinitsha"))
+					Expect(baseTreeSHA).To(Equal("autoinittree"))
+					return "commitsha456", nil
+				},
+			}
+
+			_, err := reconcileWith(name, stub)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stub.commitFilesCalls).To(Equal(1))
+
+			sr := getScaffoldRequest(name)
+			Expect(sr.Status.CommitSHA).To(Equal("commitsha456"))
 			completed := findCondition(sr.Status.Conditions, "Completed")
 			Expect(completed).NotTo(BeNil())
 			Expect(completed.Status).To(Equal(metav1.ConditionTrue))
@@ -236,8 +274,8 @@ var _ = Describe("ScaffoldRequest Controller", func() {
 				fetchTreeFn: func(ctx context.Context, owner, repo, sha, gotPrefix string) (map[string][]byte, error) {
 					return scaffoldTreeFixture(prefix), nil
 				},
-				repositoryStateFn: func(ctx context.Context, owner, repo string) (string, bool, error) {
-					return "main", false, nil
+				repositoryStateFn: func(ctx context.Context, owner, repo string) (string, int, string, string, error) {
+					return "main", 2, "someothersha", "someothertree", nil
 				},
 				commitExistsFn: func(ctx context.Context, owner, repo, sha string) (bool, error) {
 					Expect(sha).To(Equal("priorcommit"))
@@ -269,8 +307,8 @@ var _ = Describe("ScaffoldRequest Controller", func() {
 				fetchTreeFn: func(ctx context.Context, owner, repo, sha, gotPrefix string) (map[string][]byte, error) {
 					return scaffoldTreeFixture(prefix), nil
 				},
-				repositoryStateFn: func(ctx context.Context, owner, repo string) (string, bool, error) {
-					return "main", false, nil // non-empty, and status.commitSHA is unset
+				repositoryStateFn: func(ctx context.Context, owner, repo string) (string, int, string, string, error) {
+					return "main", 2, "someothersha", "someothertree", nil // non-empty, and status.commitSHA is unset
 				},
 			}
 

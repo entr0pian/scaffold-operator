@@ -48,18 +48,28 @@ type githubClient interface {
 	// (i.e. still prefixed).
 	FetchTree(ctx context.Context, owner, repo, sha, prefix string) (map[string][]byte, error)
 
-	// RepositoryState returns owner/repo's default branch and whether it has
-	// zero commits (no ref for that branch exists yet).
-	RepositoryState(ctx context.Context, owner, repo string) (defaultBranch string, empty bool, err error)
+	// RepositoryState returns owner/repo's default branch and its commit
+	// history shape. CommitCount is capped at 2 ("2 or more") — the caller
+	// only ever needs to distinguish 0 / 1 / many. HeadSHA and HeadTreeSHA
+	// are populated whenever CommitCount is 1: with autoInit:true (see
+	// component-operator), a freshly created repository's expected starting
+	// state is exactly one commit (GitHub's auto-generated README), and the
+	// scaffold commit is built on top of it as parent, using its tree as
+	// base_tree, rather than requiring a genuinely empty repository (which
+	// GitHub's Git Data API rejects outright — see CommitFiles).
+	RepositoryState(ctx context.Context, owner, repo string) (defaultBranch string, commitCount int, headSHA string, headTreeSHA string, err error)
 
 	// CommitExists reports whether sha is a real, reachable commit in
 	// owner/repo.
 	CommitExists(ctx context.Context, owner, repo, sha string) (bool, error)
 
-	// CommitFiles creates one commit containing files (path -> content) as
-	// the sole parent-less commit on branch (which must not yet exist — see
-	// RepositoryState) and returns the new commit's SHA.
-	CommitFiles(ctx context.Context, owner, repo, branch, message string, files map[string][]byte) (string, error)
+	// CommitFiles creates one commit containing files (path -> content) on
+	// branch. If parentSHA is empty, the commit is parent-less and branch
+	// must not yet exist (RepositoryState reported 0 commits). Otherwise the
+	// commit is built on top of parentSHA, using baseTreeSHA as the tree's
+	// base_tree, and the existing branch ref is updated to point at it.
+	// Returns the new commit's SHA.
+	CommitFiles(ctx context.Context, owner, repo, branch, message string, files map[string][]byte, parentSHA, baseTreeSHA string) (string, error)
 }
 
 // goGithubClient is githubClient backed by a real GitHub API token.
@@ -99,14 +109,14 @@ func (c *goGithubClient) FetchTree(ctx context.Context, owner, repo, sha, prefix
 	return out, nil
 }
 
-func (c *goGithubClient) RepositoryState(ctx context.Context, owner, repo string) (string, bool, error) {
+func (c *goGithubClient) RepositoryState(ctx context.Context, owner, repo string) (string, int, string, string, error) {
 	r, _, err := c.gh.Repositories.Get(ctx, owner, repo)
 	if err != nil {
-		return "", false, err
+		return "", 0, "", "", err
 	}
 	defaultBranch := r.GetDefaultBranch()
 
-	_, _, err = c.gh.Git.GetRef(ctx, owner, repo, "heads/"+defaultBranch)
+	ref, _, err := c.gh.Git.GetRef(ctx, owner, repo, "heads/"+defaultBranch)
 	if err != nil {
 		// GitHub does not 404 a missing ref on a repository that exists but
 		// has no commit history yet -- it returns 409 Conflict ("Git
@@ -114,11 +124,30 @@ func (c *goGithubClient) RepositoryState(ctx context.Context, owner, repo string
 		// matches a genuinely empty repo; a nonexistent repo would already
 		// have failed above on Repositories.Get.
 		if isEmptyRepository(err) {
-			return defaultBranch, true, nil
+			return defaultBranch, 0, "", "", nil
 		}
-		return "", false, err
+		return "", 0, "", "", err
 	}
-	return defaultBranch, false, nil
+	headSHA := ref.GetObject().GetSHA()
+
+	// PerPage:2 is enough to tell "exactly one" from "more than one" without
+	// paging through full history.
+	commits, _, err := c.gh.Repositories.ListCommits(ctx, owner, repo, &github.CommitsListOptions{
+		SHA:         defaultBranch,
+		ListOptions: github.ListOptions{PerPage: 2},
+	})
+	if err != nil {
+		return "", 0, "", "", fmt.Errorf("listing commits: %w", err)
+	}
+	if len(commits) >= 2 {
+		return defaultBranch, 2, headSHA, "", nil
+	}
+
+	headCommit, _, err := c.gh.Git.GetCommit(ctx, owner, repo, headSHA)
+	if err != nil {
+		return "", 0, "", "", fmt.Errorf("getting head commit %s: %w", headSHA, err)
+	}
+	return defaultBranch, 1, headSHA, headCommit.GetTree().GetSHA(), nil
 }
 
 func (c *goGithubClient) CommitExists(ctx context.Context, owner, repo, sha string) (bool, error) {
@@ -132,7 +161,7 @@ func (c *goGithubClient) CommitExists(ctx context.Context, owner, repo, sha stri
 	return true, nil
 }
 
-func (c *goGithubClient) CommitFiles(ctx context.Context, owner, repo, branch, message string, files map[string][]byte) (string, error) {
+func (c *goGithubClient) CommitFiles(ctx context.Context, owner, repo, branch, message string, files map[string][]byte, parentSHA, baseTreeSHA string) (string, error) {
 	entries := make([]*github.TreeEntry, 0, len(files))
 	for path, content := range files {
 		blob, _, err := c.gh.Git.CreateBlob(ctx, owner, repo, github.Blob{
@@ -150,25 +179,35 @@ func (c *goGithubClient) CommitFiles(ctx context.Context, owner, repo, branch, m
 		})
 	}
 
-	tree, _, err := c.gh.Git.CreateTree(ctx, owner, repo, "", entries)
+	tree, _, err := c.gh.Git.CreateTree(ctx, owner, repo, baseTreeSHA, entries)
 	if err != nil {
 		return "", fmt.Errorf("creating tree: %w", err)
 	}
 
-	commit, _, err := c.gh.Git.CreateCommit(ctx, owner, repo, github.Commit{
+	commitInput := github.Commit{
 		Message: github.Ptr(message),
 		Tree:    tree,
-	}, nil)
+	}
+	if parentSHA != "" {
+		commitInput.Parents = []*github.Commit{{SHA: github.Ptr(parentSHA)}}
+	}
+	commit, _, err := c.gh.Git.CreateCommit(ctx, owner, repo, commitInput, nil)
 	if err != nil {
 		return "", fmt.Errorf("creating commit: %w", err)
 	}
 
 	ref := "refs/heads/" + branch
-	if _, _, err := c.gh.Git.CreateRef(ctx, owner, repo, github.CreateRef{
-		Ref: ref,
-		SHA: commit.GetSHA(),
-	}); err != nil {
-		return "", fmt.Errorf("creating ref %s: %w", ref, err)
+	if parentSHA == "" {
+		if _, _, err := c.gh.Git.CreateRef(ctx, owner, repo, github.CreateRef{
+			Ref: ref,
+			SHA: commit.GetSHA(),
+		}); err != nil {
+			return "", fmt.Errorf("creating ref %s: %w", ref, err)
+		}
+	} else {
+		if _, _, err := c.gh.Git.UpdateRef(ctx, owner, repo, ref, github.UpdateRef{SHA: commit.GetSHA()}); err != nil {
+			return "", fmt.Errorf("updating ref %s: %w", ref, err)
+		}
 	}
 
 	return commit.GetSHA(), nil
