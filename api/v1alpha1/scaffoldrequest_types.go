@@ -63,6 +63,13 @@ type ScaffoldRequestSpec struct {
 	// +kubebuilder:validation:Required
 	Owner string `json:"owner"`
 
+	// componentOwner is the team responsible for the component (the platform
+	// Component's spec.owner), distinct from owner above which is the GitHub
+	// org/user. Substituted into the rendered template (e.g.
+	// catalog-info.yaml's spec.owner for Backstage discovery).
+	// +kubebuilder:validation:Required
+	ComponentOwner string `json:"componentOwner"`
+
 	// template is the platform-scaffolds template name (e.g. golang-service).
 	// +kubebuilder:validation:Required
 	Template string `json:"template"`

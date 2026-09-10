@@ -44,6 +44,13 @@ spec:
                   componentName is the identity used for the service/binary name, Helm
                   chart name, and Kubernetes resource names rendered into the scaffold.
                 type: string
+              componentOwner:
+                description: |-
+                  componentOwner is the team responsible for the component (the platform
+                  Component's spec.owner), distinct from owner above which is the GitHub
+                  org/user. Substituted into the rendered template (e.g.
+                  catalog-info.yaml's spec.owner for Backstage discovery).
+                type: string
               componentRef:
                 description: |-
                   componentRef is informational: correlation/provenance only (matches the
@@ -78,6 +85,7 @@ spec:
                 type: string
             required:
             - componentName
+            - componentOwner
             - componentRef
             - owner
             - repositoryName

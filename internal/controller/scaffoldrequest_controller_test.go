@@ -114,6 +114,7 @@ func newScaffoldRequest(name string) *scaffoldv1alpha1.ScaffoldRequest {
 			ComponentName:  name,
 			RepositoryName: name,
 			Owner:          "entr0pian",
+			ComponentOwner: "team-payments",
 			Template:       "golang-service",
 			Version:        "0.1.0",
 		},

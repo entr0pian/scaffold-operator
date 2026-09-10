@@ -137,6 +137,7 @@ func (r *ScaffoldRequestReconciler) execute(ctx context.Context, sr *scaffoldv1a
 		"componentName":  sr.Spec.ComponentName,
 		"repositoryName": sr.Spec.RepositoryName,
 		"owner":          sr.Spec.Owner,
+		"componentOwner": sr.Spec.ComponentOwner,
 	}
 	if err := validateScaffoldContract(scaffoldYAML, params); err != nil {
 		r.block(sr, "InvalidScaffoldContract", err.Error())

@@ -25,6 +25,7 @@ func testParams() map[string]string {
 		"componentName":  "payments",
 		"repositoryName": "payments",
 		"owner":          "entr0pian",
+		"componentOwner": "payments-team",
 	}
 }
 
@@ -38,6 +39,7 @@ func TestRenderTemplate(t *testing.T) {
 		".github/workflows/ci.yaml":       []byte("image: {{ env.IMAGE }}\nactor: {{ github.actor }}\n"),
 		"internal/.gitkeep":               []byte(""),
 		"Makefile":                        []byte("build:\n\tgo build ./...\n"),
+		"catalog-info.yaml.tpl":           []byte("metadata:\n  name: {{ componentName }}\n  annotations:\n    github.com/project-slug: {{ owner }}/{{ repositoryName }}\nspec:\n  owner: {{ componentOwner }}\n"),
 	}
 
 	out := renderTemplate(templateDir, testParams())
@@ -54,6 +56,9 @@ func TestRenderTemplate(t *testing.T) {
 	}
 	if got, want := string(out["cmd/server/main.go"]), "// payments server\npackage main\n"; got != want {
 		t.Errorf("cmd/server/main.go = %q, want %q", got, want)
+	}
+	if got, want := string(out["catalog-info.yaml"]), "metadata:\n  name: payments\n  annotations:\n    github.com/project-slug: entr0pian/payments\nspec:\n  owner: payments-team\n"; got != want {
+		t.Errorf("catalog-info.yaml = %q, want %q", got, want)
 	}
 
 	// Non-.tpl files: copied byte-for-byte, including files that contain
