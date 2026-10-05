@@ -1,8 +1,8 @@
 name: Test Chart
 
+# Called by ci.yml, which gates the image push and deploy on it.
 on:
-  push:
-  pull_request:
+  workflow_call:
 
 permissions: {}
 
@@ -49,6 +49,12 @@ jobs:
       - name: Lint Helm Chart
         run: |
           helm lint ./chart
+
+      # The chart's crossplane-secret Role/RoleBinding live in
+      # crossplane-system, which kind doesn't have.
+      - name: Create crossplane-system namespace
+        run: |
+          kubectl create namespace crossplane-system
 
 # TODO: Uncomment if cert-manager is enabled
 #      - name: Install cert-manager via Helm (wait for readiness)
