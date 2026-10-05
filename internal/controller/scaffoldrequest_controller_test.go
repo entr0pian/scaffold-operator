@@ -141,6 +141,13 @@ func ensureCredentialsSecret(ctx context.Context) {
 	}
 }
 
+// Fixture values shared by the reconcile tests below.
+const (
+	testTemplatePrefix   = "templates/golang-service/"
+	testTemplateRevision = "deadbeef"
+	testDefaultBranch    = "main"
+)
+
 var _ = Describe("ScaffoldRequest Controller", func() {
 	ctx := context.Background()
 
@@ -175,16 +182,16 @@ var _ = Describe("ScaffoldRequest Controller", func() {
 				Expect(k8sClient.Delete(ctx, newScaffoldRequest(name))).To(Succeed())
 			})
 
-			prefix := "templates/golang-service/"
+			prefix := testTemplatePrefix
 			stub := &stubGitHubClient{
 				resolveRevisionFn: func(ctx context.Context, owner, repo, ref string) (string, error) {
 					Expect(owner).To(Equal(scaffoldsOwner))
 					Expect(repo).To(Equal(scaffoldsRepo))
 					Expect(ref).To(Equal("golang-service/v0.1.0"))
-					return "deadbeef", nil
+					return testTemplateRevision, nil
 				},
 				fetchTreeFn: func(ctx context.Context, owner, repo, sha, gotPrefix string) (map[string][]byte, error) {
-					Expect(sha).To(Equal("deadbeef"))
+					Expect(sha).To(Equal(testTemplateRevision))
 					Expect(gotPrefix).To(Equal(prefix))
 					return scaffoldTreeFixture(prefix), nil
 				},
@@ -209,7 +216,7 @@ var _ = Describe("ScaffoldRequest Controller", func() {
 			Expect(stub.commitFilesCalls).To(Equal(1))
 
 			sr := getScaffoldRequest(name)
-			Expect(sr.Status.TemplateRevision).To(Equal("deadbeef"))
+			Expect(sr.Status.TemplateRevision).To(Equal(testTemplateRevision))
 			Expect(sr.Status.CommitSHA).To(Equal("commitsha123"))
 
 			completed := findCondition(sr.Status.Conditions, "Completed")
@@ -226,14 +233,14 @@ var _ = Describe("ScaffoldRequest Controller", func() {
 				Expect(k8sClient.Delete(ctx, newScaffoldRequest(name))).To(Succeed())
 			})
 
-			prefix := "templates/golang-service/"
+			prefix := testTemplatePrefix
 			stub := &stubGitHubClient{
-				resolveRevisionFn: func(ctx context.Context, owner, repo, ref string) (string, error) { return "deadbeef", nil },
+				resolveRevisionFn: func(ctx context.Context, owner, repo, ref string) (string, error) { return testTemplateRevision, nil },
 				fetchTreeFn: func(ctx context.Context, owner, repo, sha, gotPrefix string) (map[string][]byte, error) {
 					return scaffoldTreeFixture(prefix), nil
 				},
 				repositoryStateFn: func(ctx context.Context, owner, repo string) (string, int, string, string, error) {
-					return "main", 1, "autoinitsha", "autoinittree", nil
+					return testDefaultBranch, 1, "autoinitsha", "autoinittree", nil
 				},
 				commitFilesFn: func(ctx context.Context, owner, repo, branch, message string, files map[string][]byte, parentSHA, baseTreeSHA string) (string, error) {
 					Expect(parentSHA).To(Equal("autoinitsha"))
@@ -269,14 +276,14 @@ var _ = Describe("ScaffoldRequest Controller", func() {
 			sr.Status.CommitSHA = "priorcommit"
 			Expect(k8sClient.Status().Update(ctx, sr)).To(Succeed())
 
-			prefix := "templates/golang-service/"
+			prefix := testTemplatePrefix
 			stub := &stubGitHubClient{
-				resolveRevisionFn: func(ctx context.Context, owner, repo, ref string) (string, error) { return "deadbeef", nil },
+				resolveRevisionFn: func(ctx context.Context, owner, repo, ref string) (string, error) { return testTemplateRevision, nil },
 				fetchTreeFn: func(ctx context.Context, owner, repo, sha, gotPrefix string) (map[string][]byte, error) {
 					return scaffoldTreeFixture(prefix), nil
 				},
 				repositoryStateFn: func(ctx context.Context, owner, repo string) (string, int, string, string, error) {
-					return "main", 2, "someothersha", "someothertree", nil
+					return testDefaultBranch, 2, "someothersha", "someothertree", nil
 				},
 				commitExistsFn: func(ctx context.Context, owner, repo, sha string) (bool, error) {
 					Expect(sha).To(Equal("priorcommit"))
@@ -302,14 +309,14 @@ var _ = Describe("ScaffoldRequest Controller", func() {
 				Expect(k8sClient.Delete(ctx, newScaffoldRequest(name))).To(Succeed())
 			})
 
-			prefix := "templates/golang-service/"
+			prefix := testTemplatePrefix
 			stub := &stubGitHubClient{
-				resolveRevisionFn: func(ctx context.Context, owner, repo, ref string) (string, error) { return "deadbeef", nil },
+				resolveRevisionFn: func(ctx context.Context, owner, repo, ref string) (string, error) { return testTemplateRevision, nil },
 				fetchTreeFn: func(ctx context.Context, owner, repo, sha, gotPrefix string) (map[string][]byte, error) {
 					return scaffoldTreeFixture(prefix), nil
 				},
 				repositoryStateFn: func(ctx context.Context, owner, repo string) (string, int, string, string, error) {
-					return "main", 2, "someothersha", "someothertree", nil // non-empty, and status.commitSHA is unset
+					return testDefaultBranch, 2, "someothersha", "someothertree", nil // non-empty, and status.commitSHA is unset
 				},
 			}
 

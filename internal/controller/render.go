@@ -79,8 +79,7 @@ var placeholderPattern = regexp.MustCompile(`\{\{\s*([A-Za-z0-9_]+)\s*\}\}`)
 // dropped or guessed at.
 func substitute(content []byte, params map[string]string) []byte {
 	return placeholderPattern.ReplaceAllFunc(content, func(match []byte) []byte {
-		name := string(placeholderPattern.FindSubmatch(match)[1])
-		if value, ok := params[name]; ok {
+		if value, ok := params[string(placeholderPattern.FindSubmatch(match)[1])]; ok {
 			return []byte(value)
 		}
 		return match
