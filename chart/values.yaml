@@ -104,6 +104,23 @@ manager:
   #   labels: {}
   #   annotations: {}
 
+## GitHub authentication
+##
+github:
+  ## "app": the taskapp-platform-scaffolder GitHub App, with short-lived
+  ##   installation tokens (one reading platform-scaffolds, and per request
+  ##   one writing contents and workflows to just the target repository).
+  ##   Credentials come from Secrets Manager through an ExternalSecret.
+  ## "pat": the shared crossplane-system/crossplane-github-credentials token.
+  ## The operator never falls back from one to the other.
+  ##
+  auth: app
+  app:
+    ## Secrets Manager secret holding appId, installationId and privateKey
+    ##
+    secretPath: taskapp/platform/scaffolder-github-app
+    clusterSecretStoreName: aws-secrets-manager
+
 ## RBAC configuration
 ##
 rbac:

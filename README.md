@@ -50,23 +50,32 @@ On each reconcile of a request that isn't yet terminal, the controller:
 retried automatically. A blocked request needs a human to resolve the
 target repository's state and then delete/recreate the `ScaffoldRequest`.
 
-### Credentials — a documented temporary tradeoff
+### Credentials — the taskapp-platform-scaffolder GitHub App
 
-`githubClientFor` reads the existing `crossplane-github-credentials` Secret
-(`crossplane-system` namespace, single `credentials` key holding
-`{"token":"...","owner":"..."}`) via a direct cross-namespace `client.Get`,
-authorized by a `Role`/`RoleBinding` scoped to `get` on that one named
-Secret (see `chart/templates/rbac/crossplane-secret-role.yaml` and
-`-rolebinding.yaml`).
+`--github-auth` picks how the operator authenticates to GitHub (the chart's
+`github.auth`). It never falls back from one mode to the other.
 
-That PAT is scoped for Crossplane's repo-*creation* needs (broad `repo`
-scope) and is now shared across two consumers with different privilege
-needs. This is accepted as a tradeoff to unblock the initial implementation,
-**not** the desired end state: a compromised scaffold-operator can currently
-do more than "create one commit in an already-identified repo." The target
-fix is a dedicated, least-privilege credential — ideally a GitHub App
-installed with only repository-contents write access on the specific repos
-it scaffolds — not a second broad PAT.
+- **`app`** (default): the `taskapp-platform-scaffolder` GitHub App
+  (Contents and Workflows read/write, installed on all of the account's
+  repositories, so a repository Crossplane just created is covered). The
+  chart's ExternalSecret copies `appId`, `installationId` and `privateKey`
+  from Secrets Manager (`taskapp/platform/scaffolder-github-app`, owned by
+  `bootstrap-cluster/terraform/management-eks`) into a Secret in the
+  operator's namespace, readable through a `Role` scoped to `get` on that
+  one name. Each request gets two short-lived installation tokens, both
+  narrower than the App: one that can only read `platform-scaffolds`, and
+  one that can only write contents and workflows to the request's target
+  repository. Workflows write is required because GitHub rejects any App
+  token that creates `.github/workflows/*`, which the `golang-service`
+  scaffold does, without it. Scaffold commits are authored by
+  `taskapp-platform-scaffolder[bot]`.
+- **`pat`**: the shared `crossplane-github-credentials` Secret
+  (`crossplane-system` namespace, single `credentials` key holding
+  `{"token":"...","owner":"..."}`), read via a direct cross-namespace
+  `client.Get`. The chart only renders the `crossplane-secret-*` Role and
+  RoleBinding for this mode. It exists for clusters without the App: kind
+  in CI (`test-chart.yml`) and the kustomize deploy used by e2e
+  (`config/manager`), neither of which has External Secrets.
 
 ### Not yet deployed
 

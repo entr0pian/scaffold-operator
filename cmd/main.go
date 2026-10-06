@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -27,6 +28,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -63,6 +65,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var githubAuth, githubAppSecret string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -81,6 +84,11 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&githubAuth, "github-auth", controller.GitHubAuthApp,
+		"How to authenticate to GitHub: \"app\" (GitHub App installation tokens) or \"pat\" "+
+			"(the shared crossplane-system/crossplane-github-credentials token). Never falls back from one to the other.")
+	flag.StringVar(&githubAppSecret, "github-app-secret", "",
+		"<namespace>/<name> of the Secret holding the GitHub App's appId, installationId and privateKey (app auth only).")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -88,6 +96,18 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	switch githubAuth {
+	case controller.GitHubAuthApp:
+		if !strings.Contains(githubAppSecret, "/") {
+			setupLog.Error(nil, "--github-auth=app needs --github-app-secret=<namespace>/<name>")
+			os.Exit(1)
+		}
+	case controller.GitHubAuthPAT:
+	default:
+		setupLog.Error(nil, "--github-auth must be \"app\" or \"pat\"", "github-auth", githubAuth)
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -159,8 +179,8 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Client: client.Options{
-			// Secret reads (the crossplane-github-credentials Secret in
-			// crossplane-system — see githubClientFor) must never go through
+			// Secret reads (the GitHub credentials Secret — see
+			// github_auth.go) must never go through
 			// the manager's cache: a cached client sets up a cluster-wide
 			// List/Watch informer for the whole type, which needs far
 			// broader RBAC than the single-named-secret Role this operator
@@ -192,9 +212,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	var github controller.GitHubClientSource
+	if githubAuth == controller.GitHubAuthApp {
+		namespace, name, _ := strings.Cut(githubAppSecret, "/")
+		secret := types.NamespacedName{Namespace: namespace, Name: name}
+		github = controller.NewGitHubAppSource(mgr.GetAPIReader(), secret)
+	} else {
+		github = controller.NewGitHubPATSource(mgr.GetAPIReader())
+	}
+	setupLog.Info("GitHub authentication", "mode", githubAuth)
+
 	if err := (&controller.ScaffoldRequestReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		GitHub: github,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "scaffoldrequest")
 		os.Exit(1)

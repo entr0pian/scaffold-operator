@@ -23,8 +23,9 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
-	"github.com/google/go-github/v75/github"
+	"github.com/google/go-github/v88/github"
 )
 
 // githubClient is the minimal GitHub surface the ScaffoldRequest controller
@@ -72,13 +73,32 @@ type githubClient interface {
 	CommitFiles(ctx context.Context, owner, repo, branch, message string, files map[string][]byte, parentSHA, baseTreeSHA string) (string, error)
 }
 
-// goGithubClient is githubClient backed by a real GitHub API token.
+// goGithubClient is githubClient backed by the real GitHub API.
 type goGithubClient struct {
 	gh *github.Client
 }
 
-func newGoGithubClient(token string) githubClient {
-	return &goGithubClient{gh: github.NewClient(nil).WithAuthToken(token)}
+// githubTimeout bounds every GitHub API call, so a hung request can't stall
+// a reconcile worker.
+const githubTimeout = 30 * time.Second
+
+// newGoGithubClient authenticates with a static token (the PAT).
+func newGoGithubClient(token string) (githubClient, error) {
+	gh, err := github.NewClient(github.WithAuthToken(token), github.WithTimeout(githubTimeout))
+	if err != nil {
+		return nil, err
+	}
+	return &goGithubClient{gh: gh}, nil
+}
+
+// newGoGithubClientWithTransport authenticates through transport (a GitHub
+// App installation transport that mints its own tokens).
+func newGoGithubClientWithTransport(transport http.RoundTripper) (githubClient, error) {
+	gh, err := github.NewClient(github.WithTransport(transport), github.WithTimeout(githubTimeout))
+	if err != nil {
+		return nil, err
+	}
+	return &goGithubClient{gh: gh}, nil
 }
 
 func (c *goGithubClient) ResolveRevision(ctx context.Context, owner, repo, ref string) (string, error) {

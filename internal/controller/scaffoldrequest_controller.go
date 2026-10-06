@@ -18,15 +18,12 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -41,13 +38,6 @@ const (
 	// contract needs.
 	scaffoldsOwner = "entr0pian"
 	scaffoldsRepo  = "platform-scaffolds"
-
-	// credentialsSecretName/credentialsSecretNamespace is the existing
-	// crossplane-github-credentials Secret, reused here as a documented
-	// temporary tradeoff (see this repo's README) rather than provisioning a
-	// second, narrower-scoped token right now.
-	credentialsSecretName      = "crossplane-github-credentials"
-	credentialsSecretNamespace = "crossplane-system"
 )
 
 // ScaffoldRequestReconciler reconciles a ScaffoldRequest object
@@ -55,12 +45,11 @@ type ScaffoldRequestReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	// NewGitHubClient constructs the GitHub API client used to execute a
-	// request, given the token read from the crossplane-github-credentials
-	// Secret. Defaults to a real go-github-backed client (see
-	// github_client.go); overridden in tests with a stub that never makes a
-	// network call.
-	NewGitHubClient func(token string) githubClient
+	// GitHub provides the GitHub client for each request:
+	// NewGitHubAppSource or NewGitHubPATSource (see github_auth.go). Both
+	// read their Secret through mgr.GetAPIReader(), a direct, uncached read
+	// that this operator's narrow RBAC (get on one named Secret) allows.
+	GitHub GitHubClientSource
 }
 
 // +kubebuilder:rbac:groups=scaffold.taskapp.io,resources=scaffoldrequests,verbs=get;list;watch
@@ -87,7 +76,7 @@ func (r *ScaffoldRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	statusBase := sr.DeepCopy()
 
-	gh, err := r.githubClientFor(ctx)
+	gh, err := r.githubClientFor(ctx, sr.Spec.RepositoryName)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -201,39 +190,13 @@ func (r *ScaffoldRequestReconciler) execute(ctx context.Context, sr *scaffoldv1a
 	return nil
 }
 
-// githubCredentials mirrors the single "credentials" key on the
-// crossplane-github-credentials Secret — a JSON blob, not separate Secret
-// keys.
-type githubCredentials struct {
-	Token string `json:"token"`
-	Owner string `json:"owner"`
-}
-
-// githubClientFor reads the shared crossplane-github-credentials Secret
-// (crossplane-system namespace) via a direct client.Get — not an env/volume
-// mount, since Secrets don't mount cross-namespace — and constructs a GitHub
-// client from its token.
-func (r *ScaffoldRequestReconciler) githubClientFor(ctx context.Context) (githubClient, error) {
-	secret := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: credentialsSecretName, Namespace: credentialsSecretNamespace}, secret); err != nil {
-		return nil, fmt.Errorf("reading %s/%s credentials secret: %w", credentialsSecretNamespace, credentialsSecretName, err)
+// githubClientFor returns the client for a request whose target repository
+// is repo.
+func (r *ScaffoldRequestReconciler) githubClientFor(ctx context.Context, repo string) (githubClient, error) {
+	if r.GitHub == nil {
+		return nil, fmt.Errorf("no GitHub credentials configured")
 	}
-
-	raw, ok := secret.Data["credentials"]
-	if !ok {
-		return nil, fmt.Errorf("%s/%s secret has no \"credentials\" key", credentialsSecretNamespace, credentialsSecretName)
-	}
-
-	var creds githubCredentials
-	if err := json.Unmarshal(raw, &creds); err != nil {
-		return nil, fmt.Errorf("parsing %s/%s credentials: %w", credentialsSecretNamespace, credentialsSecretName, err)
-	}
-
-	newClient := r.NewGitHubClient
-	if newClient == nil {
-		newClient = newGoGithubClient
-	}
-	return newClient(creds.Token), nil
+	return r.GitHub.clientFor(ctx, repo)
 }
 
 func (r *ScaffoldRequestReconciler) block(sr *scaffoldv1alpha1.ScaffoldRequest, reason, message string) {

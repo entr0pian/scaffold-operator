@@ -155,9 +155,9 @@ var _ = Describe("ScaffoldRequest Controller", func() {
 		r := &ScaffoldRequestReconciler{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
-			NewGitHubClient: func(token string) githubClient {
-				return gh
-			},
+			GitHub: &patSource{reader: k8sClient, newClient: func(string) (githubClient, error) {
+				return gh, nil
+			}},
 		}
 		return r.Reconcile(ctx, reconcile.Request{
 			NamespacedName: types.NamespacedName{Name: name, Namespace: "default"},

@@ -21,7 +21,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/google/go-github/v75/github"
+	"github.com/google/go-github/v88/github"
 )
 
 func githubError(statusCode int) error {
