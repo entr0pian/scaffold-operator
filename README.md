@@ -1,232 +1,144 @@
 # scaffold-operator
 
-Kubebuilder operator that executes `ScaffoldRequest` (`scaffold.taskapp.io/v1alpha1`)
-— a one-time render-and-commit of a [`platform-scaffolds`](https://github.com/entr0pian/platform-scaffolds)
-template into a component's newly created GitHub repository. See
-[`PLATFORM_API_ARCHITECTURE.md`](https://github.com/entr0pian/platform-architecture/blob/main/PLATFORM_API_ARCHITECTURE.md)'s
-CREATION EXCEPTION: ScaffoldRequest section for the full resource model this
-operator participates in, and `scaffold-operator-plan.md` (in the repo root
-of the wider taskapp workspace) for the design history.
+Renders a [`platform-scaffolds`](https://github.com/entr0pian/platform-scaffolds)
+template into a newly created GitHub repository as **one commit**, exactly
+once. It executes the `ScaffoldRequest` API (`scaffold.taskapp.io/v1alpha1`)
+and runs on the `management` cluster.
 
-## Description
+## Where it fits
 
-`component-operator`'s `Component` controller creates a `ScaffoldRequest`
-once a component's owned `GitHubRepository` is ready, resolving
-`componentName`/`repositoryName`/`owner`/`template`/`version` once and
-writing them directly into `spec` — the request is fully self-contained.
-This controller (`ScaffoldRequestReconciler`) **never reads `Component`**;
-everything it needs to execute already lives in `spec`. That's the hard
-boundary between "decides WHAT/WHEN" (component-operator) and "executes"
-(scaffold-operator).
+Onboarding a service creates a `Component`. Every step after that is automated:
 
-On each reconcile of a request that isn't yet terminal, the controller:
-
-1. Resolves `<template>/v<version>` against `platform-scaffolds` to an
-   immutable commit SHA (recorded as `status.templateRevision` before
-   anything else, so provenance survives even a later failure).
-2. Fetches `templates/<template>/scaffold.yaml` and validates that every
-   parameter it marks `required` has a non-empty value among the three this
-   operator supplies (`componentName`, `repositoryName`, `owner`) — a
-   `scaffold.yaml` requiring anything else is a contract change this
-   renderer doesn't improvise around.
-3. Renders `templates/<template>/template/`: `.tpl` files have the suffix
-   stripped and exact-name `{{ paramName }}` placeholders substituted
-   (never arbitrary `{{ ... }}` evaluation); every other file is copied
-   byte-for-byte, so unrelated Helm/GitHub Actions `{{ }}` syntax in the
-   scaffold's own output is never touched.
-4. Checks the target repository: **empty** → commits; **non-empty with the
-   previously recorded `status.commitSHA` still reachable** → treats this as
-   crash/status-write-loss recovery and marks `Completed` without writing
-   anything new; **non-empty otherwise** → sets `Blocked`
-   (`RepositoryNotEmpty`) and stops — this request has no proof it produced
-   the existing content, so it never overwrites or guesses.
-5. On an empty repository, resolves the real default branch (never a
-   hardcoded `main`) and makes **one** atomic commit via the GitHub Git Data
-   API (blob → tree → commit → ref), which is the reason this exists as a
-   separate operator instead of Crossplane `RepositoryFile` resources (which
-   commit once per file).
-
-`Completed` and `Blocked` are both terminal — neither is ever cleared or
-retried automatically. A blocked request needs a human to resolve the
-target repository's state and then delete/recreate the `ScaffoldRequest`.
-
-### Credentials — the taskapp-platform-scaffolder GitHub App
-
-`--github-auth` picks how the operator authenticates to GitHub (the chart's
-`github.auth`). It never falls back from one mode to the other.
-
-- **`app`** (default): the `taskapp-platform-scaffolder` GitHub App
-  (Contents and Workflows read/write, installed on all of the account's
-  repositories, so a repository Crossplane just created is covered). The
-  chart's ExternalSecret copies `appId`, `installationId` and `privateKey`
-  from Secrets Manager (`taskapp/platform/scaffolder-github-app`, owned by
-  `bootstrap-cluster/terraform/management-eks`) into a Secret in the
-  operator's namespace, readable through a `Role` scoped to `get` on that
-  one name. Each request gets two short-lived installation tokens, both
-  narrower than the App: one that can only read `platform-scaffolds`, and
-  one that can only write contents and workflows to the request's target
-  repository. Workflows write is required because GitHub rejects any App
-  token that creates `.github/workflows/*`, which the `golang-service`
-  scaffold does, without it. Scaffold commits are authored by
-  `taskapp-platform-scaffolder[bot]`.
-- **`pat`**: the shared `crossplane-github-credentials` Secret
-  (`crossplane-system` namespace, single `credentials` key holding
-  `{"token":"...","owner":"..."}`), read via a direct cross-namespace
-  `client.Get`. The chart only renders the `crossplane-secret-*` Role and
-  RoleBinding for this mode. It exists for clusters without the App: kind
-  in CI (`test-chart.yml`) and the kustomize deploy used by e2e
-  (`config/manager`), neither of which has External Secrets.
-
-### Not yet deployed
-
-Like `component-operator`, this operator is scaffolded and buildable but not
-wired into the deployment catalog (`application-repositories/catalog|infra/scaffold-operator/*`)
-or ArgoCD yet. The `chart/templates/rbac/crossplane-secret-*.yaml` pair also
-needs to be applied against whichever cluster this operator ends up running
-on — cross-namespace RBAC that intentionally lives outside the raw
-`config/rbac` kustomize tree (kustomize's blanket `namespace:` transform in
-`config/default` would otherwise force these into the operator's own
-namespace instead of `crossplane-system`); the Helm chart is therefore the
-deployment artifact of record for this operator, matching how it already
-carries the CRD.
-
-**Image registry note**: `.github/workflows/docker-publish.yml` pushes to
-`ghcr.io/entr0pian/scaffold-operator` (GHCR), not Docker Hub — unlike
-`component-operator`'s image, which pulls today with no `imagePullSecrets`
-because Docker Hub repos default to public. A package pushed to GHCR via
-`GITHUB_TOKEN` defaults to **private** regardless of the source repo's
-visibility, which would break pulling on a real cluster until either the
-package is flipped to public in GitHub's package settings, or
-`manager.imagePullSecrets` (already a supported chart value, currently
-unset) is wired up with a GHCR pull credential. **Verify package visibility
-after the first push, before wiring this into `application-repositories`.**
-
-## Getting Started
-
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
-
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
-
-```sh
-make docker-build docker-push IMG=<some-registry>/scaffold-operator:tag
+```mermaid
+flowchart LR
+    BS["Backstage<br/>Onboard Service"] -->|PR| AR["application-repositories"]
+    AR -->|Argo CD| C["Component"]
+    C --> CO["component-operator"]
+    CO -->|GitHubRepository XR| XP["Crossplane"]
+    XP -->|create repo| GH[("GitHub repo")]
+    CO -->|"ScaffoldRequest<br/>(once repo is Ready)"| SO["scaffold-operator"]
+    PS[("platform-scaffolds<br/>template@tag")] -->|read| SO
+    SO -->|one commit| GH
+    GH -->|CI builds image| RO["release-operator<br/>(auto-deploy)"]
+    RO --> DEV["dev"]
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+The split is deliberate:
 
-**Install the CRDs into the cluster:**
+- **component-operator decides *what* and *when*.** It writes a
+  self-contained `ScaffoldRequest`, and owns it, so deleting the
+  `Component` deletes the request.
+- **scaffold-operator only *executes*.** It never reads `Component`.
+  Everything it needs is in the request's `spec`.
 
-```sh
-make install
+## The API
+
+```yaml
+apiVersion: scaffold.taskapp.io/v1alpha1
+kind: ScaffoldRequest
+metadata:
+  name: payments
+spec:
+  componentRef: {name: payments}
+  componentName: payments      # service / chart / resource names
+  repositoryName: payments     # target GitHub repository
+  owner: entr0pian             # GitHub account of the repository
+  componentOwner: team-payments  # catalog-info.yaml spec.owner
+  template: golang-service     # templates/<template>/ in platform-scaffolds
+  version: "0.12.0"            # resolved as tag <template>/v<version>
+status:
+  templateRevision: <sha>      # exact platform-scaffolds commit used
+  commitSHA: <sha>             # the scaffold commit in the target repo
+  conditions: [Completed | Blocked]
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+## How a request is executed
 
-```sh
-make deploy IMG=<some-registry>/scaffold-operator:tag
+```mermaid
+flowchart TD
+    A[ScaffoldRequest] --> T{Completed or Blocked?}
+    T -->|yes| Z[stop: terminal, never retried]
+    T -->|no| R["resolve &lt;template&gt;/v&lt;version&gt;<br/>→ status.templateRevision"]
+    R --> V{"scaffold.yaml present<br/>and its required params supplied?"}
+    V -->|no| B1["Blocked<br/>Missing/InvalidScaffoldContract"]
+    V -->|yes| X{"status.commitSHA set<br/>and still in the repo?"}
+    X -->|"yes (status write was lost)"| OK["Completed<br/>(recovered, nothing written)"]
+    X -->|no| S{commits in target repo}
+    S -->|"0 or 1<br/>(GitHub's auto-init README)"| W["render + one atomic commit<br/>→ Completed"]
+    S -->|2 or more| B2["Blocked<br/>RepositoryNotEmpty"]
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+- **Rendering:** `.tpl` files get the suffix stripped and exact
+  `{{ paramName }}` placeholders replaced. All other files are copied
+  byte for byte, so the scaffold's own Helm and Actions `{{ }}` syntax
+  is never touched.
+- **One commit:** the files are written through the Git Data API (blobs →
+  tree → commit → ref) on the repository's real default branch. Crossplane
+  `RepositoryFile` resources would make one commit per file instead.
+- **Safety:** the operator never overwrites content it can't prove it
+  wrote. A `Blocked` request needs a person to fix the repository and then
+  recreate the request.
+- **No updates:** an already scaffolded repository is never migrated to a
+  newer template version.
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+## GitHub access
 
-```sh
-kubectl apply -k config/samples/
+The operator authenticates as its own GitHub App, **`taskapp-platform-scaffolder`**.
+The App has Contents and Workflows read/write, and is installed on all
+repositories so a repository Crossplane just created is covered.
+Commits are authored by `taskapp-platform-scaffolder[bot]`.
+
+```mermaid
+flowchart LR
+    SM[("Secrets Manager<br/>taskapp/platform/scaffolder-github-app")] -->|ExternalSecret| K["Secret in<br/>scaffold-operator-system"]
+    K --> OP["scaffold-operator"]
+    OP -->|"token 1: contents:read<br/>platform-scaffolds only"| PS[("platform-scaffolds")]
+    OP -->|"token 2: contents + workflows write<br/>target repo only"| T[("new repository")]
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+- **Short-lived tokens:** each token lasts at most an hour, and each is
+  narrower than the App.
+- **Workflows permission:** templates commit `.github/workflows/*`, and
+  GitHub rejects that from an App token without workflows write.
+- **Secret ownership:** `bootstrap-cluster/terraform/management-eks` owns
+  the secret.
+- **`--github-auth=pat`:** reads the shared
+  `crossplane-system/crossplane-github-credentials` token instead. It exists
+  only for kind-based CI and e2e, which have no External Secrets. The
+  operator never falls back from the App to the PAT.
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+## Deployment
 
-```sh
-kubectl delete -k config/samples/
+```mermaid
+flowchart LR
+    P[push to main] --> CI["CI: lint, test, e2e, chart test"]
+    CI -->|all green| IMG["image<br/>ghcr.io/entr0pian/scaffold-operator:&lt;sha&gt;"]
+    IMG --> BUMP["bump-infra (application-repositories)<br/>pins infra/scaffold-operator chart + image to &lt;sha&gt;"]
+    BUMP --> ACD["Argo CD → management"]
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+The Helm chart in `chart/` is what gets deployed. `config/` (kustomize) is
+used only for local and e2e deploys.
+
+| Chart value | Default | |
+|---|---|---|
+| `github.auth` | `app` | `app` or `pat` |
+| `github.app.secretPath` | `taskapp/platform/scaffolder-github-app` | Secrets Manager key |
+| `github.app.clusterSecretStoreName` | `aws-secrets-manager` | ESO store |
+
+## Development
 
 ```sh
-make uninstall
+make test       # unit + envtest (GitHub is stubbed)
+make lint
+make test-e2e   # kind cluster
+go run ./cmd/main.go --github-auth=pat   # against your current kubeconfig
 ```
 
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/scaffold-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/scaffold-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+The API is defined in `api/v1alpha1/`. After changing it, run
+`make manifests generate`, then mirror the new
+`config/crd/bases` CRD into `chart/templates/crd/` (keep its Helm `if` wrapper).
 
 ## License
 
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+Apache 2.0. See the header in any source file.
